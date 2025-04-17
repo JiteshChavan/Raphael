@@ -1,0 +1,3 @@
+install cuda 12.6 
+get nvcc --version working
+then install mamba module  : pip install .
