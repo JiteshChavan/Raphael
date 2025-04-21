@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mlp import MLP
+
 
 # EC MOE NOT SINKHORN
 # DONT NEED AUXILIARY LOSSES IN LOSS LANDSCAPE
@@ -17,7 +17,7 @@ class FeedForwardECMoe (nn.Module):
         hidden_base_mult (int) : Round hidden dimension upto next nearest multiple of this value
     """
 
-    def __init__(self, num_experts, expert_capacity:float, n_embd, n_hidden, hidden_base_mult):
+    def __init__(self, num_experts, expert_capacity:float, n_embd, n_hidden, hidden_base_mult, gated_linear_unit:bool = True):
         super().__init__()
         self.num_experts = num_experts
 
@@ -27,16 +27,27 @@ class FeedForwardECMoe (nn.Module):
         self.n_embd = n_embd
         self.hidden_base_mult = hidden_base_mult
         self.n_hidden = hidden_base_mult * ((n_hidden + hidden_base_mult -1) // hidden_base_mult)
-
+        
+        self.fan_h1 = self.n_hidden
+        self.fan_h2 = self.n_hidden
         # to get softmax over num_experts for T tokens
         self.gate = nn.Linear (n_embd, num_experts, bias=False) # bias false makes sense in case model wants to 1 hot on experts
 
-        # each expert goes from n_embd to n_hidden
-        self.w1 = nn.Parameter (torch.ones (num_experts, n_embd, n_hidden))
+        if gated_linear_unit:
+            self.fan_h1 *= 2
+
+        # each expert goes from n_embd to n_hidden    
+        self.w1 = nn.Parameter (torch.ones (num_experts, self.n_embd, self.fan_h1))
         # non linear activation
-        self.gelu = nn.GELU()
+        if gated_linear_unit:
+            def glu(x):
+                x1, x2 = x.chunk(2, dim=-1)
+                return F.silu (x1) * x2
+            self.non_linear_activation = glu  
+        else:
+            self.non_linear_activation = F.silu
         # each expert goes from n_hidden to n_embd
-        self.w2 = nn.Parameter (torch.ones (num_experts, n_hidden, n_embd))
+        self.w2 = nn.Parameter (torch.ones (num_experts, self.fan_h2, self.n_embd))
     
     def forward (self, x:torch.Tensor):
         # extract shapes
@@ -65,7 +76,7 @@ class FeedForwardECMoe (nn.Module):
         
         # forward
         activation = torch.einsum ('BElC, ECH -> BElH', xin, self.w1) # (B, E, l, H)
-        activation = self.gelu(activation)
+        activation = self.non_linear_activation(activation)
         activation = torch.einsum ('BElH, EHC -> BElC', activation, self.w2) # (B, E, l, C)
 
         # scale the activation with gating score probs, so that stronger experts have greater influence on the outputs
