@@ -2,8 +2,6 @@
 # All rights reserved.
 """
 Misc functions, including distributed helpers.
-
-Mostly copy-paste from torchvision references.
 """
 
 import datetime
